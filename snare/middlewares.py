@@ -4,8 +4,9 @@ from aiohttp import web
 
 class SnareMiddleware():
 
-    def __init__(self, file_name):
+    def __init__(self, file_name, server_header):
         self.error_404 = file_name
+        self.server_header = server_header
 
     async def handle_404(self, request):
         return aiohttp_jinja2.render_template(self.error_404, request, {})
@@ -19,15 +20,20 @@ class SnareMiddleware():
         async def error_middleware(request, handler):
             try:
                 response = await handler(request)
-                override = overrides.get(response.status)
+                status = response.status
+                override = overrides.get(status)
                 if override:
-                    return await override(request)
+                    response = await override(request)
+                    response.headers['Server'] = self.server_header
+                    response.set_status(status)
+                    return response
                 return response
             except web.HTTPException as ex:
                 override = overrides.get(ex.status)
                 if override:
                     return await override(request)
                 raise
+
         return error_middleware
 
     def setup_middlewares(self, app):

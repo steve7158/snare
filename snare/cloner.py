@@ -19,7 +19,7 @@ class Cloner(object):
         self.max_depth = max_depth
         self.moved_root = None
         if len(self.root.host) < 4:
-            sys.exit('invalid taget {}'.format(self.root.host))
+            sys.exit('invalid target {}'.format(self.root.host))
         self.target_path = '/opt/snare/pages/{}'.format(self.root.host)
 
         if not os.path.exists(self.target_path):
@@ -31,6 +31,8 @@ class Cloner(object):
 
     @staticmethod
     def add_scheme(url):
+        if url[-1] == '/':
+            url = url.strip('/')
         if yarl.URL(url).scheme:
             new_url = yarl.URL(url)
             err_url = yarl.URL(url + '/status_404')
@@ -155,14 +157,14 @@ class Cloner(object):
                         if not carved_url.is_absolute():
                             carved_url = self.root.join(carved_url)
                         if carved_url.human_repr() not in self.visited_urls:
-                            await self.new_urls.put((carved_url, level+1))
+                            await self.new_urls.put((carved_url, level + 1))
 
     async def get_root_host(self):
         try:
             async with aiohttp.ClientSession() as session:
                 resp = await session.get(self.root)
                 if resp.host != self.root.host:
-                    self.moved_root = resp._url_obj
+                    self.moved_root = resp.url
                 resp.close()
         except aiohttp.ClientError as err:
             self.logger.error("Can\'t connect to target host: %s", err)

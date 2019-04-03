@@ -38,7 +38,7 @@ class TannerHandler():
             data['method'] = request.method
             data['headers'] = header
             data['path'] = request.path_qs
-            if ('Cookie' in header):
+            if 'Cookie' in header:
                 data['cookies'] = {
                     cookie.split('=')[0]: cookie.split('=')[1] for cookie in header['Cookie'].split(';')
                     }
@@ -73,18 +73,26 @@ class TannerHandler():
         requested_name = p.sub('/', requested_name)
 
         if detection['type'] == 1:
+            possible_requests = [requested_name]
             query_start = requested_name.find('?')
             if query_start != -1:
-                requested_name = requested_name[:query_start]
-            if requested_name == '/':
-                requested_name = self.run_args.index_page
-            try:
+                possible_requests.append(requested_name[:query_start])
+
+            file_name = None
+            for requested_name in possible_requests:
+                if requested_name == '/':
+                    requested_name = self.run_args.index_page
                 if requested_name[-1] == '/':
                     requested_name = requested_name[:-1]
                 requested_name = unquote(requested_name)
-                file_name = self.meta[requested_name]['hash']
-                content_type = self.meta[requested_name]['content_type']
-            except KeyError:
+                try:
+                    file_name = self.meta[requested_name]['hash']
+                    content_type = self.meta[requested_name]['content_type']
+                except KeyError:
+                    pass
+                else:
+                    break
+            if not file_name:
                 status_code = 404
             else:
                 path = os.path.join(self.dir, file_name)
@@ -106,7 +114,7 @@ class TannerHandler():
                         content = p.read()
                 except KeyError:
                     content = '<html><body></body></html>'
-                    content_type = r'text\html'
+                    content_type = r'text/html'
 
                 soup = BeautifulSoup(content, 'html.parser')
                 script_tag = soup.new_tag('div')
@@ -123,4 +131,4 @@ class TannerHandler():
             payload_content = detection['payload']
             status_code = payload_content['status_code']
 
-        return (content, content_type, headers, status_code)
+        return content, content_type, headers, status_code
