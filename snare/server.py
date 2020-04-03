@@ -3,7 +3,6 @@ import json
 import aiohttp
 from aiohttp import web
 from aiohttp.web import StaticResource as StaticRoute
-import multidict
 import aiohttp_jinja2
 import jinja2
 from snare.middlewares import SnareMiddleware
@@ -11,9 +10,16 @@ from snare.tanner_handler import TannerHandler
 
 
 class HttpRequestHandler():
-    def __init__(self, meta, run_args, snare_uuid, debug=False, keep_alive=75, **kwargs):
+    def __init__(
+            self,
+            meta,
+            run_args,
+            snare_uuid,
+            debug=False,
+            keep_alive=75,
+            **kwargs):
         self.run_args = run_args
-        self.dir = '/opt/snare/pages/{}'.format(run_args.page_dir)
+        self.dir = run_args.full_page_path
         self.meta = meta
         self.snare_uuid = snare_uuid
         self.logger = logging.getLogger(__name__)
@@ -53,34 +59,24 @@ class HttpRequestHandler():
         if self.run_args.slurp_enabled:
             await self.submit_slurp(request.path_qs)
 
-        content, content_type, headers, status_code = await self.tanner_handler.parse_tanner_response(
+        content, headers, status_code = await self.tanner_handler.parse_tanner_response(
             request.path_qs, event_result['response']['message']['detection'])
 
-        response_headers = multidict.CIMultiDict()
-
-        for name, val in headers.items():
-            response_headers.add(name, val)
-
-        response_headers.add('Server', self.run_args.server_header)
+        if self.run_args.server_header:
+            headers['Server'] = self.run_args.server_header
 
         if 'cookies' in data and 'sess_uuid' in data['cookies']:
             previous_sess_uuid = data['cookies']['sess_uuid']
         else:
             previous_sess_uuid = None
 
-        if event_result is not None and ('sess_uuid' in event_result['response']['message']):
+        if event_result is not None and\
+                'sess_uuid' in event_result['response']['message']:
             cur_sess_id = event_result['response']['message']['sess_uuid']
             if previous_sess_uuid is None or not previous_sess_uuid.strip() or previous_sess_uuid != cur_sess_id:
-                response_headers.add('Set-Cookie', 'sess_uuid=' + cur_sess_id)
+                headers.add('Set-Cookie', 'sess_uuid=' + cur_sess_id)
 
-        if not content_type:
-            response_content_type = 'text/plain'
-        else:
-            response_content_type = content_type
-        response = web.Response(
-            body=content, status=status_code, headers=response_headers, content_type=response_content_type
-        )
-        return response
+        return web.Response(body=content, status=status_code, headers=headers)
 
     async def start(self):
         app = web.Application()
@@ -89,14 +85,18 @@ class HttpRequestHandler():
             app, loader=jinja2.FileSystemLoader(self.dir)
         )
         middleware = SnareMiddleware(
-            self.meta['/status_404']['hash'],
-            self.run_args.server_header
+            error_404=self.meta['/status_404'].get('hash'),
+            headers=self.meta['/status_404'].get('headers', []),
+            server_header=self.run_args.server_header
         )
         middleware.setup_middlewares(app)
 
         self.runner = web.AppRunner(app)
         await self.runner.setup()
-        site = web.TCPSite(self.runner, self.run_args.host_ip, self.run_args.port)
+        site = web.TCPSite(
+            self.runner,
+            self.run_args.host_ip,
+            self.run_args.port)
 
         await site.start()
         names = sorted(str(s.name) for s in self.runner.sites)

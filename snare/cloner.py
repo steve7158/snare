@@ -6,6 +6,7 @@ from asyncio import Queue
 import hashlib
 import json
 import re
+from collections import defaultdict
 import aiohttp
 import cssutils
 import yarl
@@ -14,21 +15,23 @@ animation = "|/-\\"
 
 
 class Cloner(object):
-    def __init__(self, root, max_depth, css_validate):
+    def __init__(self, root, max_depth, css_validate, default_path='/opt/snare'):
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
         self.visited_urls = []
         self.root, self.error_page = self.add_scheme(root)
         self.max_depth = max_depth
         self.moved_root = None
+        self.default_path = default_path
         if (self.root.host is None) or (len(self.root.host) < 4):
             sys.exit('invalid target {}'.format(self.root.host))
-        self.target_path = '/opt/snare/pages/{}'.format(self.root.host)
+        self.target_path = '{}/pages/{}'.format(self.default_path, self.root.host)
+
         if not os.path.exists(self.target_path):
-            os.mkdir(self.target_path)
+            os.makedirs(self.target_path)
         self.css_validate = css_validate
         self.new_urls = Queue()
-        self.meta = {}
+        self.meta = defaultdict(dict)
 
         self.counter = 0
         self.itr = 0
@@ -40,6 +43,26 @@ class Cloner(object):
             new_url = yarl.URL('http://' + url)
         err_url = new_url.with_path('/status_404').with_query(None).with_fragment(None)
         return new_url, err_url
+
+    @staticmethod
+    def get_headers(response):
+        ignored_headers_lowercase = [
+            'age',
+            'cache-control',
+            'connection',
+            'content-encoding',
+            'content-length',
+            'date',
+            'etag',
+            'expires',
+            'x-cache',
+        ]
+
+        headers = []
+        for key, value in response.headers.items():
+            if key.lower() not in ignored_headers_lowercase:
+                headers.append({key: value})
+        return headers
 
     async def process_link(self, url, level, check_host=False):
         try:
@@ -93,9 +116,12 @@ class Cloner(object):
                 act_link['action'] = res
 
         # prevent redirects
-        for redir in soup.findAll(True, attrs={'name': re.compile('redirect.*')}):
+        for redir in soup.findAll(
+            True, attrs={
+                'name': re.compile('redirect.*')}):
             if redir['value'] != "":
-                redir['value'] = yarl.URL(redir['value']).relative().human_repr()
+                redir['value'] = yarl.URL(
+                    redir['value']).relative().human_repr()
 
         return soup
 
@@ -109,7 +135,8 @@ class Cloner(object):
             file_name = "/" + file_name
 
         if file_name == '/' or file_name == "":
-            if host == self.root.host or (self.moved_root is not None and self.moved_root.host == host):
+            if host == self.root.host or\
+                    self.moved_root is not None and self.moved_root.host == host:
                 file_name = '/index.html'
             else:
                 file_name = host
@@ -128,28 +155,27 @@ class Cloner(object):
             self.visited_urls.append(current_url.human_repr())
             file_name, hash_name = self._make_filename(current_url)
             self.logger.debug('Cloned file: %s', file_name)
-            self.meta[file_name] = {}
             data = None
             content_type = None
             try:
                 response = await session.get(current_url, headers={'Accept': 'text/html'}, timeout=10.0)
+                headers = self.get_headers(response)
                 content_type = response.content_type
                 data = await response.read()
-
             except (aiohttp.ClientError, asyncio.TimeoutError) as client_error:
                 self.logger.error(client_error)
             else:
                 await response.release()
+
             if data is not None:
                 self.meta[file_name]['hash'] = hash_name
-                self.meta[file_name]['content_type'] = content_type
+                self.meta[file_name]['headers'] = headers
                 self.counter = self.counter + 1
+
                 if content_type == 'text/html':
                     soup = await self.replace_links(data, level)
                     data = str(soup).encode()
-                with open(os.path.join(self.target_path, hash_name), 'wb') as index_fh:
-                    index_fh.write(data)
-                if content_type == 'text/css':
+                elif content_type == 'text/css':
                     css = cssutils.parseString(data, validate=self.css_validate)
                     for carved_url in cssutils.getUrls(css):
                         if carved_url.startswith('data'):
@@ -159,6 +185,9 @@ class Cloner(object):
                             carved_url = self.root.join(carved_url)
                         if carved_url.human_repr() not in self.visited_urls:
                             await self.new_urls.put((carved_url, level + 1))
+
+                with open(os.path.join(self.target_path, hash_name), 'wb') as index_fh:
+                    index_fh.write(data)
 
     async def get_root_host(self):
         try:
